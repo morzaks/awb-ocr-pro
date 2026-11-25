@@ -43,8 +43,43 @@ const resultBody = document.getElementById('resultBody');
 // ==========================================
 // 2. EXTRACTION ENGINE (PDF TEXT -> OCR)
 // ==========================================
-async function extractSpatialSender(textContent) {
-  // Cari koordinat X/Y kata "Pengirim" lalu ambil teks di bawahnya pada kolom X yang berdekatan
+function reconstructText(items) {
+  if (!items || !items.length) return '';
+
+  // Urutkan teks dari atas ke bawah (Y), lalu kiri ke kanan (X)
+  const sorted = [...items].sort((a, b) => {
+    const yDiff = b.transform[5] - a.transform[5];
+    if (Math.abs(yDiff) > 4) return yDiff;
+    return a.transform[4] - b.transform[4];
+  });
+
+  let result = '';
+  let prev = null;
+
+  for (const item of sorted) {
+    const str = item.str;
+    if (!str) continue;
+
+    if (prev) {
+      const sameLine = Math.abs(item.transform[5] - prev.transform[5]) <= 4;
+      if (!sameLine) {
+        result += '\n';
+      } else {
+        const prevEnd = prev.transform[4] + (prev.width || 0);
+        const gap = item.transform[4] - prevEnd;
+        // Tambahkan spasi HANYA jika jarak antar potongan teks > 2.5px
+        if (gap > 2.5 && !result.endsWith(' ') && !str.startsWith(' ')) {
+          result += ' ';
+        }
+      }
+    }
+    result += str;
+    prev = item;
+  }
+  return result;
+}
+
+function extractSpatialSender(textContent) {
   const items = textContent.items;
   const senderAnchor = items.find((it) => /Pengirim/i.test(it.str));
   if (!senderAnchor) return '';
@@ -52,14 +87,14 @@ async function extractSpatialSender(textContent) {
   const anchorX = senderAnchor.transform[4];
   const anchorY = senderAnchor.transform[5];
 
-  return items
-    .filter((it) => {
-      const x = it.transform[4];
-      const y = it.transform[5];
-      return Math.abs(x - anchorX) < 120 && y <= anchorY + 10 && y >= anchorY - 90;
-    })
-    .map((it) => it.str)
-    .join(' ');
+  // Batasi hanya ke kanan dari label "Pengirim:" agar tidak bocor ke kolom Penerima
+  const senderItems = items.filter((it) => {
+    const x = it.transform[4];
+    const y = it.transform[5];
+    return x >= anchorX - 15 && y <= anchorY + 10 && y >= anchorY - 110;
+  });
+
+  return reconstructText(senderItems);
 }
 
 async function runOcrFallback(page) {
@@ -107,8 +142,8 @@ async function processPdfFile(file) {
 
     const page = await pdf.getPage(i);
     const textContent = await page.getTextContent();
-    const rawText = textContent.items.map((it) => it.str).join(' ');
-    const spatialSender = await extractSpatialSender(textContent);
+    const rawText = reconstructText(textContent.items);
+    const spatialSender = extractSpatialSender(textContent);
 
     let parsed = parseAwbPage(i, rawText, spatialSender, 'PDF Text');
 
